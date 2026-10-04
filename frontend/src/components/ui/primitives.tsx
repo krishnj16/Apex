@@ -1,7 +1,33 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
-export function Panel({ children, className = "", as: Tag = "section" }: { children: ReactNode; className?: string; as?: "section" | "div" | "article" }) {
-  return <Tag className={`panel p-5 ${className}`}>{children}</Tag>;
+export function Panel({
+  children,
+  className = "",
+  as: Tag = "section",
+  title,
+  action,
+}: {
+  children: ReactNode;
+  className?: string;
+  as?: "section" | "div" | "article";
+  title?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <Tag className={`panel p-5 ${className}`}>
+      {(title || action) && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          {title && (
+            <h2 className="font-display text-lg font-semibold tracking-tight text-ink">
+              {title}
+            </h2>
+          )}
+          {action && <div>{action}</div>}
+        </div>
+      )}
+      {children}
+    </Tag>
+  );
 }
 
 export function Heading({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
@@ -54,7 +80,20 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
     </div>
   );
 }
-
+export function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm text-dim">{label}</span>
+      {children}
+    </label>
+  );
+}
 export function ErrorNote({ message }: { message: string }) {
   return <p role="alert" className="rounded-md border border-fall/40 px-3 py-2 text-sm text-fall">{message}</p>;
 }
