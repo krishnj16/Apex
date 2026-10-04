@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+html, body { background: theme("colors.ground"); color: theme("colors.ink"); }
+body { font-family: theme("fontFamily.sans"); -webkit-font-smoothing: antialiased; }
+.num { font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid theme("colors.ridge"); outline-offset: 2px; border-radius: 4px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
+
+@layer components {
+  .panel { @apply rounded-panel border border-rule bg-panel; }
+  .field { @apply w-full rounded-md border border-rule bg-ground px-3 py-2 text-sm text-ink placeholder:text-dim focus:border-ridge focus:outline-none; }
+  .label { @apply mb-1 block text-sm text-dim; }
+}

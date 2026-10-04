@@ -1,0 +1,10 @@
+{
+  "name": "apex",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:analytics": "cd analytics && uvicorn app.main:app --reload --port 8000",
+    "test": "cd analytics && python -m pytest -q && npm --prefix backend test"
+  }
+}

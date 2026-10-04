@@ -1,0 +1,512 @@
+// APEX database schema.
+// Raw facts (attempts, sessions, check-ins) are stored; derived metrics are computed by the
+// analytics service and only cached in snapshot tables, never typed in by hand.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- enums
+
+enum SubjectKind {
+  quantitative
+  verbal
+  reasoning
+  knowledge
+}
+
+enum TopicStatus {
+  not_started
+  learning
+  familiar
+  strong
+}
+
+enum ErrorType {
+  knowledge
+  concept_confusion
+  application
+  calculation
+  careless
+  time_management
+  question_selection
+  interpretation
+  guessing
+  unknown
+}
+
+enum TaskType {
+  concept_learning
+  revision
+  practice
+  timed_practice
+  sectional_test
+  mock_test
+  mock_analysis
+  error_log_review
+  reading
+  current_affairs
+  vocabulary
+  formula_revision
+  question_selection_practice
+  maintenance_practice
+}
+
+enum TaskStatus {
+  planned
+  in_progress
+  completed
+  partial
+  skipped
+  removed // taken off the day by the user; stays recorded so re-plans do not bring it back
+}
+
+enum SkipReason {
+  too_tired
+  not_enough_time
+  difficult
+  lost_focus
+  commitment
+  other
+}
+
+enum Difficulty {
+  easy
+  medium
+  hard
+}
+
+enum RehabStatus {
+  completed
+  partial
+  skipped
+}
+
+// ---------------------------------------------------------------- identity
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  timezone     String   @default("Asia/Kolkata")
+  isDemo       Boolean  @default(false) // demo data lives in its own account, never mixed
+  onboardedAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  preference     UserPreference?
+  exams          Exam[]
+  classes        ClassSession[]
+  commitments    Commitment[]
+  checkIns       DailyCheckIn[]
+  plans          DailyPlan[]
+  studySessions  StudySession[]
+  mocks          Mock[]
+  attempts       QuestionAttempt[]
+  rehabPrograms  RehabProgram[]
+  rehabSessions  RehabSession[]
+  weeklyReviews  WeeklyReview[]
+  snapshots      PerformanceSnapshot[]
+}
+
+model UserPreference {
+  id                   String @id @default(cuid())
+  userId               String @unique
+  user                 User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dayStartMin          Int    @default(420)  // 07:00
+  dayEndMin            Int    @default(1380) // 23:00
+  studyMinMin          Int    @default(300)
+  studyMaxMin          Int    @default(420)
+  rejuvenationMinMin   Int    @default(180)
+  rejuvenationMaxMin   Int    @default(240)
+  preferredBlockMin    Int    @default(60)
+  maxBlockMin          Int    @default(90)
+  breakMin             Int    @default(15)
+  notifyRehab          Boolean @default(false)
+  notifyWeeklyReview   Boolean @default(true)
+  notifyMocks          Boolean @default(false)
+}
+
+// ---------------------------------------------------------------- syllabus
+
+model Exam {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  examDate     DateTime  @db.Date
+  userPriority Float     @default(1.0)
+  active       Boolean   @default(true)
+  archivedAt   DateTime?
+  subjects     Subject[]
+  mocks        Mock[]
+  createdAt    DateTime  @default(now())
+
+  @@unique([userId, name])
+  @@index([userId, active])
+}
+
+model Subject {
+  id           String      @id @default(cuid())
+  examId       String
+  exam         Exam        @relation(fields: [examId], references: [id], onDelete: Cascade)
+  name         String
+  kind         SubjectKind @default(quantitative)
+  importance   Float       @default(1.0)
+  userPriority Float       @default(1.0)
+  cadenceDays  Int         @default(3)
+  order        Int         @default(0)
+  topics       Topic[]
+
+  @@unique([examId, name])
+}
+
+model Topic {
+  id             String      @id @default(cuid())
+  subjectId      String
+  subject        Subject     @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  name           String
+  importance     Int         @default(3)  // 1..5
+  coverage       Float       @default(0)  // 0..1, user-maintained
+  status         TopicStatus @default(not_started)
+  userPriority   Float       @default(1.0)
+  active         Boolean     @default(true)
+  order          Int         @default(0)
+  prerequisites  TopicPrerequisite[] @relation("dependent")
+  dependents     TopicPrerequisite[] @relation("prerequisite")
+  subtopics      Subtopic[]
+  attempts       QuestionAttempt[]
+  mockQuestions  MockQuestion[]
+  planItems      DailyPlanItem[]
+  studySessions  StudySession[]
+
+  @@unique([subjectId, name])
+}
+
+model TopicPrerequisite {
+  dependentId    String
+  prerequisiteId String
+  dependent      Topic @relation("dependent", fields: [dependentId], references: [id], onDelete: Cascade)
+  prerequisite   Topic @relation("prerequisite", fields: [prerequisiteId], references: [id], onDelete: Cascade)
+
+  @@id([dependentId, prerequisiteId])
+}
+
+model Subtopic {
+  id       String      @id @default(cuid())
+  topicId  String
+  topic    Topic       @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  name     String
+  coverage Float       @default(0)
+  status   TopicStatus @default(not_started)
+
+  @@unique([topicId, name])
+}
+
+// ---------------------------------------------------------------- daily constraints
+
+model ClassSession {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  subject   String?
+  location  String?
+  startMin  Int
+  endMin    Int
+  weekdays  Int[]    // 0=Sun..6=Sat for recurring classes; empty = one-off
+  date      DateTime? @db.Date
+  validFrom DateTime? @db.Date
+  validTo   DateTime? @db.Date
+  cancellations ClassCancellation[]
+
+  @@index([userId])
+}
+
+/// One date on which a recurring class does not happen (holiday, teacher absent). The class itself is unchanged.
+model ClassCancellation {
+  id      String       @id @default(cuid())
+  classId String
+  class   ClassSession @relation(fields: [classId], references: [id], onDelete: Cascade)
+  date    DateTime     @db.Date
+
+  @@unique([classId, date])
+}
+
+model Commitment {
+  id       String    @id @default(cuid())
+  userId   String
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title    String
+  startMin Int
+  endMin   Int
+  weekdays Int[]
+  date     DateTime? @db.Date
+
+  @@index([userId])
+}
+
+model DailyCheckIn {
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date               DateTime @db.Date
+  sleepHours         Float?
+  sleepQuality       Int?     // 1..5
+  energy             Int?     // 1..10
+  stress             Int?
+  mentalFatigue      Int?
+  physicalDiscomfort Int?     // optional, recorded only
+  legDiscomfort      Int?
+  wristDiscomfort    Int?
+  availableStudyMin  Int?     // what the user says they have today
+  readiness          Float?   // cached from analytics, with its components
+  readinessDetail    Json?
+  createdAt          DateTime @default(now())
+
+  @@unique([userId, date])
+}
+
+// ---------------------------------------------------------------- planning
+
+model DailyPlan {
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date        DateTime        @db.Date
+  version     Int             @default(1) // regenerations increment this
+  readiness   Float?
+  budget      Json            // BudgetBreakdown from the engine
+  warnings    String[]
+  alternatives Json
+  engineVersion String
+  items       DailyPlanItem[]
+  createdAt   DateTime        @default(now())
+
+  @@unique([userId, date, version])
+  @@index([userId, date])
+}
+
+model DailyPlanItem {
+  id             String      @id @default(cuid())
+  planId         String
+  plan           DailyPlan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+  topicId        String?
+  topic          Topic?      @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  examId         String
+  subjectId      String?
+  mockId         String?
+  title          String
+  taskType       TaskType
+  startMin       Int
+  endMin         Int
+  plannedMin     Int
+  cognitiveLoad  Int
+  score          Float
+  priority       String
+  gap            String
+  reasons        String[]
+  factors        Json
+  pinned         Boolean     @default(false)
+  status         TaskStatus  @default(planned)
+  actualMin      Int?
+  completionPct  Int?
+  skipReason     SkipReason?
+  skipNote       String?
+  completedAt    DateTime?
+  sessions       StudySession[]
+
+  @@index([planId])
+  @@index([topicId, status])
+}
+
+model StudySession {
+  id         String         @id @default(cuid())
+  userId     String
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topicId    String?
+  topic      Topic?         @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  planItemId String?
+  planItem   DailyPlanItem? @relation(fields: [planItemId], references: [id], onDelete: SetNull)
+  taskType   TaskType
+  startedAt  DateTime
+  endedAt    DateTime
+  activeMin  Int            // timer time excluding pauses
+  plannedMin Int?
+
+  @@index([userId, startedAt])
+  @@index([topicId])
+}
+
+// ---------------------------------------------------------------- mocks & attempts
+
+model Mock {
+  id         String        @id @default(cuid())
+  userId     String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  examId     String
+  exam       Exam          @relation(fields: [examId], references: [id], onDelete: Cascade)
+  name       String
+  takenOn    DateTime      @db.Date
+  totalScore Float
+  maxScore   Float?
+  totalMin   Int?
+  analysedAt DateTime?     // null -> engine schedules a mock-analysis task
+  sections   MockSection[]
+  questions  MockQuestion[]
+  createdAt  DateTime      @default(now())
+
+  @@index([userId, takenOn])
+}
+
+model MockSection {
+  id        String @id @default(cuid())
+  mockId    String
+  mock      Mock   @relation(fields: [mockId], references: [id], onDelete: Cascade)
+  name      String
+  score     Float
+  attempted Int    @default(0)
+  correct   Int    @default(0)
+  incorrect Int    @default(0)
+  skipped   Int    @default(0)
+  timeMin   Int?
+
+  @@unique([mockId, name])
+}
+
+model MockQuestion {
+  id          String      @id @default(cuid())
+  mockId      String
+  mock        Mock        @relation(fields: [mockId], references: [id], onDelete: Cascade)
+  section     String
+  number      Int
+  topicId     String?
+  topic       Topic?      @relation(fields: [topicId], references: [id], onDelete: SetNull)
+  subtopic    String?
+  attempted   Boolean
+  correct     Boolean?
+  timeSec     Int?
+  expectedSec Int?
+  errorType   ErrorType?
+  difficulty  Difficulty?
+  confidence  Int?        // 1..5
+  notes       String?
+
+  @@unique([mockId, section, number])
+  @@index([topicId])
+}
+
+// Practice questions logged outside mocks (sectionals, drills).
+model QuestionAttempt {
+  id          String     @id @default(cuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  topicId     String
+  topic       Topic      @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  on          DateTime   @db.Date
+  sourceId    String     // groups attempts into a session for trend analysis
+  correct     Boolean?
+  timeSec     Int?
+  expectedSec Int?
+  errorType   ErrorType?
+  difficulty  Difficulty?
+
+  @@index([userId, on])
+  @@index([topicId, on])
+}
+
+// ---------------------------------------------------------------- rehabilitation
+
+model RehabProgram {
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String          // e.g. "Leg", "Wrist"
+  dailyMin    Int
+  preferredStartMin Int?
+  // Days of the week this programme is scheduled (0 = Sunday). Per-date changes live in overrides.
+  weekdays    Int[]           @default([0, 1, 2, 3, 4, 5, 6])
+  active      Boolean         @default(true)
+  exercises   RehabExercise[]
+  sessions    RehabSession[]
+  overrides   RehabDayOverride[]
+
+  @@unique([userId, name])
+}
+
+model RehabExercise {
+  id        String       @id @default(cuid())
+  programId String
+  program   RehabProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  name      String
+  bodyArea  String       // "Feet & ankles", "Knee", "Hips"
+  sets      Int
+  repsMin   Int?
+  repsMax   Int?
+  secMin    Int?
+  secMax    Int?
+  notes     String?
+  active    Boolean      @default(true)
+  order     Int
+}
+
+model RehabSession {
+  id         String       @id @default(cuid())
+  userId     String
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  programId  String
+  program    RehabProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  date       DateTime     @db.Date
+  status     RehabStatus
+  painBefore Int?         // 0..10, recorded only
+  painAfter  Int?
+  difficulty Int?         // 1..10
+  notes      String?
+
+  @@unique([programId, date])
+  @@index([userId, date])
+}
+
+// ---------------------------------------------------------------- reviews
+
+model WeeklyReview {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weekStart DateTime @db.Date
+  data      Json     // WeeklyAnalyzer output, stored as generated
+  createdAt DateTime @default(now())
+
+  @@unique([userId, weekStart])
+}
+
+model PerformanceSnapshot {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  scope     String   // "topic" | "subject" | "exam"
+  scopeId   String
+  metrics   Json
+
+  @@unique([userId, date, scope, scopeId])
+}
+
+/// A one-day change to a rehab programme: different start time, different length, or skipped.
+model RehabDayOverride {
+  id          String       @id @default(cuid())
+  programId   String
+  program     RehabProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  date        DateTime     @db.Date
+  startMin    Int?
+  durationMin Int?
+  skip        Boolean      @default(false)
+
+  @@unique([programId, date])
+}
