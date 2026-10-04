@@ -12,10 +12,18 @@ export const scheduleRouter = Router();
 const minute = z.number().int().min(0).max(1440);
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const timed = <T extends z.ZodRawShape>(shape: T) => z.object({
-  ...shape, startMin: minute, endMin: minute,
-  weekdays: z.array(z.number().int().min(0).max(6)).max(7).default([]), date: day.nullable().optional(),
-}).refine((x) => x.startMin < x.endMin, "Start must be before end")
-  .refine((x) => x.weekdays.length > 0 || !!x.date, "Choose weekdays for a recurring entry or a date for a one-off");
+  ...shape,
+  startMin: minute,
+  endMin: minute,
+  weekdays: z.array(z.number().int().min(0).max(6)).max(7).default([]),
+  date: day.nullable().optional(),
+}).refine(
+  (x) => x.startMin !== undefined && x.endMin !== undefined && x.startMin < x.endMin,
+  "Start must be before end"
+).refine(
+  (x) => (x.weekdays?.length ?? 0) > 0 || !!x.date,
+  "Choose weekdays for a recurring entry or a date for a one-off"
+);
 
 const classInput = timed({
   title: z.string().trim().min(1).max(120), subject: z.string().max(80).nullable().optional(),
